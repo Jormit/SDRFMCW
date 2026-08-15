@@ -5,12 +5,13 @@ from scipy.signal.windows import gaussian
 import numpy as np
 import matplotlib.pyplot as plt
 
-sample_rate = 5e6
+sample_rate = 50e6
 sample_time = 1/float(sample_rate)
 f_center = 900e6
 block_size = 16384
 ramp_time = sample_time * block_size
-max_freq = sample_rate/4
+max_freq = sample_rate/2
+c = 3e8  # speed of light
 
 
 def plot_sft(data, sample_time, block_size, title):
@@ -28,6 +29,36 @@ def plot_sft(data, sample_time, block_size, title):
     plt.colorbar()
 
 
+def plot_range(data, sample_time, block_size, bandwidth, ramp_time, title="Range Spectrum"):
+    slope = bandwidth / ramp_time  # Hz/s
+
+    # Window to control sidelobes before the range FFT
+    window = np.hanning(block_size)
+    spectrum = np.fft.fftshift(np.fft.fft(data * window))
+    freqs = np.fft.fftshift(np.fft.fftfreq(block_size, d=sample_time))
+
+    ranges = freqs * c / (2 * slope)
+
+    mag_db = 20 * np.log10(np.abs(spectrum) + 1e-12)
+
+    # Only positive ranges are physical (negative beat freq = negative range)
+    valid = ranges >= 0
+    ranges = ranges[valid]
+    mag_db = mag_db[valid]
+
+    max_unambig_range = (1/sample_time) * c / (4 * slope)  # Nyquist limit on f_beat = fs/2
+
+    plt.figure()
+    plt.plot(ranges, mag_db)
+    plt.xlabel("Range (m)")
+    plt.ylabel("Magnitude (dB)")
+    plt.title(f"{title}  (max unambiguous range \u2248 {max_unambig_range:.1f} m)")
+    plt.grid(True)
+    plt.tight_layout()
+
+    return ranges, mag_db
+
+
 # Generate the Sawtooth
 times = np.linspace(0, ramp_time, block_size)
 freqs = np.linspace(0, max_freq, block_size)
@@ -39,7 +70,7 @@ plot_sft(sawtooth, sample_time, block_size, "Transmit Signal")
 sdr = adi.Pluto("ip:192.168.2.1")
 
 #TX
-sdr.tx_rf_bandwidth = int(sample_rate/2.0) 
+sdr.tx_rf_bandwidth = int(sample_rate/2.0)
 sdr.tx_lo = int(f_center)
 sdr.tx_hardwaregain_chan0 = 0        # TX gain, in dB (range roughly -89.75 to 0)
 
@@ -65,15 +96,12 @@ def find_roll(reference, received):
     Find the integer sample shift that best aligns `received` with `reference`
     via cross-correlation. Returns the roll amount to apply to `received`.
     """
-    # Correlate magnitude/complex signals - normalize first to avoid amplitude bias
     ref = reference / np.max(np.abs(reference))
     rx = received / np.max(np.abs(received))
 
     corr = np.correlate(rx, ref, mode='full')
     lag = np.argmax(np.abs(corr)) - (len(ref) - 1)
 
-    # lag is how much `received` is shifted relative to `reference`
-    # roll by -lag to bring it back into alignment
     return -lag
 
 received_samples = np.roll(received_samples, find_roll(sawtooth, received_samples))
@@ -83,9 +111,11 @@ plot_sft(received_samples, sample_time, block_size, "Received Signal")
 
 # Mixed Result
 mixed_product = np.conj(sawtooth) * received_samples
-plot_sft(np.conj(sawtooth) * received_samples, sample_time, block_size, "After Mixer")
+plot_sft(mixed_product, sample_time, block_size, "After Mixer")
 
-
+# Range spectrum
+plot_range(mixed_product, sample_time, block_size, max_freq, ramp_time, "Range Spectrum")
+#plt.xlim(0, 50)
 
 sdr.tx_destroy_buffer()
 plt.show()
