@@ -5,8 +5,8 @@ from scipy.signal.windows import gaussian
 import numpy as np
 import matplotlib.pyplot as plt
 
-sample_rate = 50e6
-sample_time = 1/float(sample_rate)
+sample_rate = 56e6
+sample_time = 1.0/float(sample_rate)
 f_center = 900e6
 block_size = 16384
 ramp_time = sample_time * block_size
