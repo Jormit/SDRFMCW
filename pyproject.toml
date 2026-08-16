@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "black>=26.5.1",
     "numpy>=2.5.2",
     "pyadi-iio>=0.0.21",
     "pyqtgraph>=0.13.7",

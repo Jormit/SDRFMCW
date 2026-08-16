@@ -22,6 +22,7 @@ DB_MAX = 40.0
 WATERFALL_DEPTH = 200
 SIGNAL_DISPLAY_SAMPLES = 2000
 N_BACKGROUND_FRAMES = 20  # frames averaged to build the background estimate
+N_CHIRP_AVERAGE = 8  # chirps averaged (in power domain) per displayed frame
 
 # Generate the Sawtooth
 bandwidth = max_freq
@@ -49,7 +50,9 @@ if RANGE_MAX is None:
 visible = (range_axis >= RANGE_MIN) & (range_axis <= RANGE_MAX)
 range_axis = range_axis[visible]
 range_step = range_axis[1] - range_axis[0]
-print(f"Displaying full range axis: {range_axis.min():.1f} m to {range_axis.max():.1f} m")
+print(
+    f"Displaying full range axis: {range_axis.min():.1f} m to {range_axis.max():.1f} m"
+)
 
 
 def compute_range(data):
@@ -134,10 +137,11 @@ tddn.sync_soft = 1
 # If it drifts noticeably from block_size samples, print a warning so you
 # know to adjust block_size or accept the small discrepancy.
 actual_frame_samples = tddn.frame_length_ms / 1000.0 * sample_rate
-print(f"Requested frame length: {frame_length_ms:.6f} ms "
-      f"({block_size} samples)")
-print(f"Actual TDD frame length: {tddn.frame_length_ms:.6f} ms "
-      f"({actual_frame_samples:.1f} samples), raw={tddn.frame_length_raw}")
+print(f"Requested frame length: {frame_length_ms:.6f} ms " f"({block_size} samples)")
+print(
+    f"Actual TDD frame length: {tddn.frame_length_ms:.6f} ms "
+    f"({actual_frame_samples:.1f} samples), raw={tddn.frame_length_raw}"
+)
 
 # ---------------------------------------------------------------------------
 # One-time range calibration.
@@ -157,18 +161,45 @@ for _ in range(N_CAL_FRAMES):
 
 cal_rolls = np.array(cal_rolls)
 calibration_offset = int(np.median(cal_rolls))
-print(f"Calibration rolls (samples): min={cal_rolls.min()} "
-      f"max={cal_rolls.max()} median={calibration_offset}")
+print(
+    f"Calibration rolls (samples): min={cal_rolls.min()} "
+    f"max={cal_rolls.max()} median={calibration_offset}"
+)
 if cal_rolls.max() - cal_rolls.min() > 2:
-    print("WARNING: calibration roll is not stable frame-to-frame -- "
-          "TDD sync may not be locked. Re-check firmware/config before "
-          "trusting this calibration.")
+    print(
+        "WARNING: calibration roll is not stable frame-to-frame -- "
+        "TDD sync may not be locked. Re-check firmware/config before "
+        "trusting this calibration."
+    )
 
 # Approximate range this offset corresponds to, just for sanity-checking
 # against what you saw in the plot before calibration:
 cal_range_m = calibration_offset * (c / (2 * sample_rate))
-print(f"Calibration offset corresponds to ~{cal_range_m:.2f} m -- "
-      f"this is where your feedthrough peak was sitting.")
+print(
+    f"Calibration offset corresponds to ~{cal_range_m:.2f} m -- "
+    f"this is where your feedthrough peak was sitting."
+)
+
+
+def get_chirp_mag_db():
+    """One TDD-synced chirp -> calibrated, dechirped range spectrum (dB)."""
+    received_samples = sdr.rx() / (2**11)
+    received_samples = np.roll(received_samples, calibration_offset)
+    mixed_product = np.conj(sawtooth) * received_samples
+    return compute_range(mixed_product)
+
+
+def get_averaged_mag_db(n_chirps=N_CHIRP_AVERAGE):
+    """Incoherently average n_chirps chirps (in power domain) to reduce the
+    noise floor by roughly sqrt(n_chirps). This is magnitude-only averaging
+    -- it does NOT preserve phase, so it helps SNR but is not a step toward
+    Doppler/velocity processing (that needs coherent accumulation instead).
+    """
+    power_acc = np.zeros(len(range_axis))
+    for _ in range(n_chirps):
+        power_acc += 10 ** (get_chirp_mag_db() / 10.0)
+    power_acc /= n_chirps
+    return 10 * np.log10(power_acc + 1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -185,11 +216,7 @@ def capture_background(n_frames=N_BACKGROUND_FRAMES):
     print(f"Capturing background over {n_frames} frames -- keep the scene clear...")
     power_acc = np.zeros(len(range_axis))
     for _ in range(n_frames):
-        received_samples = sdr.rx() / (2**11)
-        received_samples = np.roll(received_samples, calibration_offset)
-        mixed_product = np.conj(sawtooth) * received_samples
-        mag_db = compute_range(mixed_product)
-        power_acc += 10 ** (mag_db / 10.0)
+        power_acc += 10 ** (get_chirp_mag_db() / 10.0)
     power_acc /= n_frames
     print("Background captured.")
     return 10 * np.log10(power_acc + 1e-12)
@@ -235,17 +262,7 @@ history = np.full((WATERFALL_DEPTH, len(range_axis)), DB_MIN)
 
 
 def update():
-    received_samples = sdr.rx() / (2**11)
-
-    # Apply the FIXED calibration offset measured once at startup -- this
-    # just cancels the constant cable/pipeline delay so range 0 lines up
-    # with the antenna reference plane. It does not adapt per frame, so
-    # real targets now show up at their true relative range instead of
-    # being masked by a per-frame best-fit correlation.
-    received_samples = np.roll(received_samples, calibration_offset)
-
-    mixed_product = np.conj(sawtooth) * received_samples
-    mag_db = compute_range(mixed_product) - background
+    mag_db = get_averaged_mag_db() - background
     curve.setData(range_axis, mag_db)
 
     history[:-1, :] = history[1:, :]
