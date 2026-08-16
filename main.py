@@ -18,7 +18,7 @@ RANGE_MAX = 50  # set to a number (e.g. 100.0) later to clip; None = show everyt
 # These now describe the post-background-subtraction display range (dB above
 # the captured background), not absolute dB. Tune once you see real data.
 DB_MIN = -10.0
-DB_MAX = 40.0
+DB_MAX = 70.0
 WATERFALL_DEPTH = 200
 SIGNAL_DISPLAY_SAMPLES = 2000
 N_BACKGROUND_FRAMES = 20  # frames averaged to build the background estimate
@@ -262,7 +262,7 @@ history = np.full((WATERFALL_DEPTH, len(range_axis)), DB_MIN)
 
 
 def update():
-    mag_db = get_averaged_mag_db() - background
+    mag_db = get_averaged_mag_db() - 0 * background
     curve.setData(range_axis, mag_db)
 
     history[:-1, :] = history[1:, :]
